@@ -1,0 +1,320 @@
+diff --git a/launcher/app/src/main/AndroidManifest.xml b/launcher/app/src/main/AndroidManifest.xml
+index 701b5fe..9f317a0 100644
+--- a/launcher/app/src/main/AndroidManifest.xml
++++ b/launcher/app/src/main/AndroidManifest.xml
+@@ -68,6 +68,9 @@
+         <!-- Coocaa OS sources for the Inputs menu (coocaa_sources); see CoocaaSources. -->
+         <provider android:authorities="com.skyworth.tv.provider" />
+         <provider android:authorities="com.skyworth.tv.sdk.provider" />
++        <!-- Weather add-on: the header widget reads its local, read-only provider. -->
++        <provider android:authorities="io.github.sumyabazar1.weather.current" />
++        <package android:name="io.github.sumyabazar1.weather" />
+     </queries>
+ 
+     <application
+diff --git a/launcher/app/src/main/java/com/gathin/tvhome/MainActivity.java b/launcher/app/src/main/java/com/gathin/tvhome/MainActivity.java
+index a5acd79..5cab15b 100644
+--- a/launcher/app/src/main/java/com/gathin/tvhome/MainActivity.java
++++ b/launcher/app/src/main/java/com/gathin/tvhome/MainActivity.java
+@@ -17,6 +17,7 @@ import android.content.pm.ResolveInfo;
+ import android.content.pm.ChangedPackages;
+ import android.content.res.ColorStateList;
+ import android.content.res.Resources;
++import android.database.Cursor;
+ import android.graphics.Bitmap;
+ import android.graphics.Canvas;
+ import android.graphics.Color;
+@@ -190,6 +191,9 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
+     private boolean lunar;
+     private int lunarOffset;
+     private TextView stats;
++    private View weatherBlock;
++    private ImageView weatherIcon;
++    private TextView weatherTemp, weatherCity, weatherDetail, weatherTip;
+     private List<RaceWeekend.Race> raceCalendar;
+     private View racePanel;
+     private TextView raceKicker, raceHeadline, raceSessions;
+@@ -381,6 +385,14 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
+         }
+     };
+ 
++    private final Runnable weatherTick = new Runnable() {
++        @Override
++        public void run() {
++            updateWeather();
++            handler.postDelayed(this, 30 * 60_000L);
++        }
++    };
++
+     private java.util.Map<Integer, String> homeAppKeys = java.util.Collections.emptyMap();
+ 
+     @Override
+@@ -489,6 +501,12 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
+         btnWifi = findViewById(R.id.btnWifi);
+         shamsiDate = findViewById(R.id.shamsiDate);
+         stats = findViewById(R.id.stats);
++        weatherBlock = findViewById(R.id.weatherBlock);
++        weatherIcon = findViewById(R.id.weatherIcon);
++        weatherTemp = findViewById(R.id.weatherTemp);
++        weatherCity = findViewById(R.id.weatherCity);
++        weatherDetail = findViewById(R.id.weatherDetail);
++        weatherTip = findViewById(R.id.weatherTip);
+         raceCalendar = cfg.raceCalendar;
+         racePanel = findViewById(R.id.racePanel);
+         raceKicker = findViewById(R.id.raceKicker);
+@@ -971,6 +989,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
+         if (openLiveTvAfterBoot()) return;
+         updateGreeting();
+         updateRace();
++        handler.removeCallbacks(weatherTick);
++        handler.post(weatherTick);
+         // The network and Inputs pills keep their state while Home is in the background, and callbacks update them
+         // when the network or the inputs change, so this refresh only catches anything missed. Its binder calls
+         // (about 7 ms on a TCL C755, most of it WifiManager.getConnectionInfo) would hold up the first frame back
+@@ -1159,6 +1179,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
+         ambient.animate().cancel();
+         heroArt.animate().cancel();
+         handler.removeCallbacks(minuteTick);
++        handler.removeCallbacks(weatherTick);
+         stopStats();
+         if (diya != null) diya.stop();
+         cancelPendingFocusScroll();
+@@ -2475,6 +2496,66 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
+         }
+     }
+ 
++    /**
++     * The header weather, read from the Weather add-on's local provider. The launcher has no INTERNET
++     * permission: the add-on fetches, this only displays its latest reading. Hidden when that app has no
++     * city or no reading yet.
++     */
++    private void updateWeather() {
++        new Thread(() -> {
++            String city = null, temp = null, condition = null, high = null, low = null, lowC = null;
++            int code = -1, day = 1;
++            try (Cursor cursor = getContentResolver().query(
++                    Uri.parse("content://io.github.sumyabazar1.weather.current/current"),
++                    null, null, null, null)) {
++                if (cursor != null && cursor.moveToFirst()) {
++                    city = cursor.getString(cursor.getColumnIndexOrThrow("city"));
++                    temp = cursor.getString(cursor.getColumnIndexOrThrow("temp"));
++                    condition = cursor.getString(cursor.getColumnIndexOrThrow("condition"));
++                    high = cursor.getString(cursor.getColumnIndexOrThrow("high"));
++                    low = cursor.getString(cursor.getColumnIndexOrThrow("low"));
++                    lowC = cursor.getString(cursor.getColumnIndexOrThrow("low_c"));
++                    code = cursor.getInt(cursor.getColumnIndexOrThrow("code"));
++                    day = cursor.getInt(cursor.getColumnIndexOrThrow("day"));
++                }
++            } catch (Exception ignored) {
++            }
++            final String cityOut = city;
++            final String tempOut = temp;
++            final String conditionOut = condition;
++            final String highOut = high;
++            final String lowOut = low;
++            final String lowCOut = lowC;
++            final int codeOut = code;
++            final int dayOut = day;
++            runOnUiThread(() -> {
++                if (isFinishing() || isDestroyed()) return;
++                if (cityOut == null) {
++                    weatherBlock.setVisibility(View.GONE);
++                    return;
++                }
++                weatherCity.setText(cityOut.toUpperCase(Locale.getDefault()));
++                weatherTemp.setText(tempOut);
++                weatherDetail.setText(conditionOut + " · " + highOut + " / " + lowOut);
++                weatherIcon.setImageResource(codeOut <= 1
++                        ? (dayOut != 0 ? R.drawable.ic_weather_sun : R.drawable.ic_weather_moon)
++                        : R.drawable.ic_weather_cloud);
++                String tip;
++                try {
++                    double lowValue = Double.parseDouble(lowCOut);
++                    if (lowValue <= 5) tip = getString(R.string.weather_tip_warm);
++                    else if (lowValue <= 12) tip = getString(R.string.weather_tip_light);
++                    else if (lowValue <= 18) tip = getString(R.string.weather_tip_sleeves);
++                    else tip = getString(R.string.weather_tip_tshirt);
++                } catch (Exception e) {
++                    tip = getString(R.string.weather_tip_light);
++                }
++                weatherTip.setText(tip + " · " + getString(R.string.weather_low, lowOut));
++                weatherBlock.setVisibility(View.VISIBLE);
++            });
++        }, "weather-header").start();
++    }
++
+     private void updateGreeting() {
+         int hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY);
+         int res;
+diff --git a/launcher/app/src/main/res/drawable/ic_weather_cloud.xml b/launcher/app/src/main/res/drawable/ic_weather_cloud.xml
+new file mode 100644
+index 0000000..c6593f6
+--- /dev/null
++++ b/launcher/app/src/main/res/drawable/ic_weather_cloud.xml
+@@ -0,0 +1,10 @@
++<?xml version="1.0" encoding="utf-8"?>
++<vector xmlns:android="http://schemas.android.com/apk/res/android"
++    android:width="24dp"
++    android:height="24dp"
++    android:viewportWidth="24"
++    android:viewportHeight="24">
++    <path
++        android:fillColor="#FFFFFFFF"
++        android:pathData="M19.35,10.04C18.67,6.59 15.64,4 12,4 9.11,4 6.6,5.64 5.35,8.04 2.34,8.36 0,10.91 0,14c0,3.31 2.69,6 6,6h13c2.76,0 5,-2.24 5,-5 0,-2.64 -2.05,-4.78 -4.65,-4.96z" />
++</vector>
+diff --git a/launcher/app/src/main/res/drawable/ic_weather_moon.xml b/launcher/app/src/main/res/drawable/ic_weather_moon.xml
+new file mode 100644
+index 0000000..54db592
+--- /dev/null
++++ b/launcher/app/src/main/res/drawable/ic_weather_moon.xml
+@@ -0,0 +1,10 @@
++<?xml version="1.0" encoding="utf-8"?>
++<vector xmlns:android="http://schemas.android.com/apk/res/android"
++    android:width="24dp"
++    android:height="24dp"
++    android:viewportWidth="24"
++    android:viewportHeight="24">
++    <path
++        android:fillColor="#FFFFFFFF"
++        android:pathData="M12.34,2.02C6.59,1.36 2,6.44 2,12c0,5.52 4.48,10 10,10 3.86,0 7.22,-2.2 8.9,-5.45 -0.37,0.08 -0.75,0.12 -1.14,0.12 -3.31,0 -6,-2.69 -6,-6 0,-3.09 2.34,-5.64 5.35,-5.97 -0.86,-1.35 -2.09,-2.35 -3.55,-2.68z" />
++</vector>
+diff --git a/launcher/app/src/main/res/drawable/ic_weather_sun.xml b/launcher/app/src/main/res/drawable/ic_weather_sun.xml
+new file mode 100644
+index 0000000..e47dd45
+--- /dev/null
++++ b/launcher/app/src/main/res/drawable/ic_weather_sun.xml
+@@ -0,0 +1,10 @@
++<?xml version="1.0" encoding="utf-8"?>
++<vector xmlns:android="http://schemas.android.com/apk/res/android"
++    android:width="24dp"
++    android:height="24dp"
++    android:viewportWidth="24"
++    android:viewportHeight="24">
++    <path
++        android:fillColor="#FFFFFFFF"
++        android:pathData="M6.76,4.84l-1.8,-1.79 -1.41,1.41 1.79,1.79 1.42,-1.41zM4,10.5H1v2h3v-2zM13,0.55h-2V3.5h2V0.55zM20.45,4.46l-1.41,-1.41 -1.79,1.79 1.41,1.41 1.79,-1.79zM17.24,18.16l1.79,1.8 1.41,-1.41 -1.8,-1.79 -1.4,1.4zM20,10.5v2h3v-2h-3zM12,5.5c-3.31,0 -6,2.69 -6,6s2.69,6 6,6 6,-2.69 6,-6 -2.69,-6 -6,-6zM11,22.45h2V19.5h-2v2.95zM3.55,18.54l1.41,1.41 1.79,-1.8 -1.41,-1.41 -1.79,1.8z" />
++</vector>
+diff --git a/launcher/app/src/main/res/drawable/weather_tip.xml b/launcher/app/src/main/res/drawable/weather_tip.xml
+new file mode 100644
+index 0000000..7a00b31
+--- /dev/null
++++ b/launcher/app/src/main/res/drawable/weather_tip.xml
+@@ -0,0 +1,6 @@
++<?xml version="1.0" encoding="utf-8"?>
++<shape xmlns:android="http://schemas.android.com/apk/res/android"
++    android:shape="rectangle">
++    <corners android:radius="999dp" />
++    <solid android:color="#4D000000" />
++</shape>
+diff --git a/launcher/app/src/main/res/layout/activity_main.xml b/launcher/app/src/main/res/layout/activity_main.xml
+index c037d24..1c2a175 100644
+--- a/launcher/app/src/main/res/layout/activity_main.xml
++++ b/launcher/app/src/main/res/layout/activity_main.xml
+@@ -292,6 +292,92 @@
+ 
+             </LinearLayout>
+ 
++            <!-- Header weather under the date, fed by the separate Weather add-on through its local
++                 read-only provider. Hidden until that app has a city and a reading. -->
++            <LinearLayout
++                android:id="@+id/weatherBlock"
++                android:layout_width="wrap_content"
++                android:layout_height="wrap_content"
++                android:layout_below="@id/leftBlock"
++                android:layout_alignStart="@id/leftBlock"
++                android:layout_marginStart="4dp"
++                android:layout_marginTop="18dp"
++                android:orientation="vertical"
++                android:focusable="false"
++                android:importantForAccessibility="no"
++                android:visibility="gone">
++
++                <LinearLayout
++                    android:layout_width="wrap_content"
++                    android:layout_height="wrap_content"
++                    android:gravity="center_vertical"
++                    android:orientation="horizontal">
++
++                    <ImageView
++                        android:id="@+id/weatherIcon"
++                        android:layout_width="26dp"
++                        android:layout_height="26dp"
++                        android:contentDescription="@null"
++                        android:importantForAccessibility="no"
++                        android:src="@drawable/ic_weather_sun"
++                        android:tint="#E6FFFFFF" />
++
++                    <TextView
++                        android:id="@+id/weatherTemp"
++                        android:layout_width="wrap_content"
++                        android:layout_height="wrap_content"
++                        android:layout_marginStart="10dp"
++                        android:fontFamily="@string/font_light"
++                        android:includeFontPadding="false"
++                        android:singleLine="true"
++                        android:textColor="#FFFFFFFF"
++                        android:textSize="30sp" />
++
++                    <LinearLayout
++                        android:layout_width="wrap_content"
++                        android:layout_height="wrap_content"
++                        android:layout_marginStart="12dp"
++                        android:orientation="vertical">
++
++                        <TextView
++                            android:id="@+id/weatherCity"
++                            android:layout_width="wrap_content"
++                            android:layout_height="wrap_content"
++                            android:fontFamily="@string/font_medium"
++                            android:letterSpacing="0.12"
++                            android:singleLine="true"
++                            android:textAllCaps="true"
++                            android:textColor="#CCFFFFFF"
++                            android:textSize="11sp" />
++
++                        <TextView
++                            android:id="@+id/weatherDetail"
++                            android:layout_width="wrap_content"
++                            android:layout_height="wrap_content"
++                            android:layout_marginTop="2dp"
++                            android:fontFamily="@string/font_regular"
++                            android:singleLine="true"
++                            android:textColor="#B3FFFFFF"
++                            android:textSize="13sp" />
++                    </LinearLayout>
++                </LinearLayout>
++
++                <TextView
++                    android:id="@+id/weatherTip"
++                    android:layout_width="wrap_content"
++                    android:layout_height="wrap_content"
++                    android:layout_marginTop="10dp"
++                    android:background="@drawable/weather_tip"
++                    android:fontFamily="@string/font_medium"
++                    android:singleLine="true"
++                    android:textColor="#E6FFFFFF"
++                    android:textSize="12sp"
++                    android:paddingStart="12dp"
++                    android:paddingTop="6dp"
++                    android:paddingEnd="12dp"
++                    android:paddingBottom="6dp" />
++            </LinearLayout>
++
+             <!-- Shown only when show_stats is on. Outside leftBlock, so the top buttons stay level with the clock
+                  row; gone, it takes no space. -->
+             <TextView
+diff --git a/launcher/app/src/main/res/values/strings.xml b/launcher/app/src/main/res/values/strings.xml
+index 635bced..a2206f9 100644
+--- a/launcher/app/src/main/res/values/strings.xml
++++ b/launcher/app/src/main/res/values/strings.xml
+@@ -151,4 +151,10 @@
+     <!-- Cinematic top shelf (cinematic_home): the line under the focused dock app's name; %1$s is when it was
+          last opened, e.g. "5 minutes ago" or "yesterday, 9:40 pm". -->
+     <string name="last_opened">Last opened %1$s</string>
++    <!-- Header weather widget, fed by the separate Weather add-on. -->
++    <string name="weather_tip_warm">Warm coat</string>
++    <string name="weather_tip_light">Light jacket</string>
++    <string name="weather_tip_sleeves">Long sleeves</string>
++    <string name="weather_tip_tshirt">T-shirt</string>
++    <string name="weather_low">low %1$s</string>
+ </resources>

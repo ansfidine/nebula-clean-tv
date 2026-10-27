@@ -1,0 +1,26 @@
+# Nebula D2426 / Capsule III Pro
+# Android 11 / SDK 30, tested 2026-10-26.
+# Packages are disabled for user 0, never uninstalled.
+#
+# Undo:
+#   TV_HOST=<PROJECTOR_IP> tools/restore.sh <this file> com.google.android.tvlauncher
+#
+# Kept by owner choice: Chromecast, AirPlay/AirPin, firmware updates,
+# Ambient screensaver, Play Games, TalkBack, all installed streaming/VPN apps.
+
+# --- Telemetry and feedback ---
+com.zhixin.logservice.nebula                 # Nebula log collector/uploader
+com.google.android.feedback                  # Google feedback
+
+# --- Content and ad services ---
+android.autoinstalls.config.sdmc             # Play auto-install of partner apps
+com.google.android.partnersetup              # partner-app attribution
+fusion.android.tv.demo                       # RetailDisplay store demo
+
+# --- Owner choice: Google Assistant / voice search ---
+com.google.android.katniss                   # mic button stops working
+
+# --- Stock home screen (only after com.gathin.tvhome is Home) ---
+com.google.android.tvlauncher                # sponsored banner and recommendation rows
+com.google.android.tvrecommendations         # recommendation rows for the stock home
+com.mediatek.android.leanbacklauncher.partnercustomizer  # partner rows for the stock home

@@ -1,0 +1,201 @@
+diff --git a/addons/weather/app/src/main/AndroidManifest.xml b/addons/weather/app/src/main/AndroidManifest.xml
+index f713c33..8d3d250 100644
+--- a/addons/weather/app/src/main/AndroidManifest.xml
++++ b/addons/weather/app/src/main/AndroidManifest.xml
+@@ -30,5 +30,10 @@
+             </intent-filter>
+             <meta-data android:name="com.gathin.tvhome.card" android:resource="@xml/module_card" />
+         </activity>
++
++        <provider
++            android:name=".WeatherProvider"
++            android:authorities="io.github.sumyabazar1.weather.current"
++            android:exported="true" />
+     </application>
+ </manifest>
+diff --git a/addons/weather/app/src/main/java/io/github/sumyabazar1/weather/Forecast.java b/addons/weather/app/src/main/java/io/github/sumyabazar1/weather/Forecast.java
+index d156c83..f43e75a 100644
+--- a/addons/weather/app/src/main/java/io/github/sumyabazar1/weather/Forecast.java
++++ b/addons/weather/app/src/main/java/io/github/sumyabazar1/weather/Forecast.java
+@@ -58,6 +58,8 @@ final class Forecast {
+         /** The WMO code, rain turned into snow where the air is cold enough for it (see {@link #snowIfCold}). */
+         final int code;
+         final boolean day;
++        /** Today's high and low, for the launcher's header widget. */
++        final double todayMaxC, todayMinC;
+         /** The next days, tomorrow first. */
+         final List<Day> days;
+         /** US AQI, or -1 when the air quality read failed. */
+@@ -65,11 +67,14 @@ final class Forecast {
+         final int humidity;
+         final int windKmh;
+ 
+-        Report(double tempC, double feelsC, int code, boolean day, List<Day> days, int aqi, int humidity, int windKmh) {
++        Report(double tempC, double feelsC, int code, boolean day, double todayMaxC, double todayMinC,
++               List<Day> days, int aqi, int humidity, int windKmh) {
+             this.tempC = tempC;
+             this.feelsC = feelsC;
+             this.code = code;
+             this.day = day;
++            this.todayMaxC = todayMaxC;
++            this.todayMinC = todayMinC;
+             this.days = days;
+             this.aqi = aqi;
+             this.humidity = humidity;
+@@ -130,9 +135,12 @@ final class Forecast {
+         double temp = current.getDouble("temperature_2m");
+         double humidity = current.getDouble("relative_humidity_2m");
+         int code = snowIfCold(current.getInt("weather_code"), temp, humidity);
++        JSONObject daily = reply.getJSONObject("daily");
+         return new Report(temp, current.getDouble("apparent_temperature"),
+                 code, current.getInt("is_day") == 1,
+-                days(reply.getJSONObject("daily")), aqiOrUnknown(where),
++                daily.getJSONArray("temperature_2m_max").getDouble(0),
++                daily.getJSONArray("temperature_2m_min").getDouble(0),
++                days(daily), aqiOrUnknown(where),
+                 (int) Math.round(humidity), (int) Math.round(current.optDouble("wind_speed_10m", 0)));
+     }
+ 
+diff --git a/addons/weather/app/src/main/java/io/github/sumyabazar1/weather/WeatherActivity.java b/addons/weather/app/src/main/java/io/github/sumyabazar1/weather/WeatherActivity.java
+index 06a6b1c..e1e6372 100644
+--- a/addons/weather/app/src/main/java/io/github/sumyabazar1/weather/WeatherActivity.java
++++ b/addons/weather/app/src/main/java/io/github/sumyabazar1/weather/WeatherActivity.java
+@@ -175,6 +175,7 @@ public final class WeatherActivity extends Activity {
+                 .setText(getString(R.string.updated, DateFormat.getTimeFormat(this).format(new Date())));
+         message.setVisibility(View.GONE);
+         content.setVisibility(View.VISIBLE);
++        WeatherCache.save(this, place.getString("name", ""), r, fahrenheit);
+     }
+ 
+     /** Type a city, pick it from the matches, keep it. Back leaves the current place as it was. */
+diff --git a/addons/weather/app/src/main/java/io/github/sumyabazar1/weather/WeatherCache.java b/addons/weather/app/src/main/java/io/github/sumyabazar1/weather/WeatherCache.java
+new file mode 100644
+index 0000000..8ddd6fc
+--- /dev/null
++++ b/addons/weather/app/src/main/java/io/github/sumyabazar1/weather/WeatherCache.java
+@@ -0,0 +1,41 @@
++package io.github.sumyabazar1.weather;
++
++import android.content.Context;
++
++import org.json.JSONObject;
++
++/** The latest reading, kept for the launcher's header widget. No network, no location. */
++final class WeatherCache {
++    private static final String PREFS = "weather_cache";
++    private static final String KEY = "data";
++
++    private WeatherCache() { }
++
++    static void save(Context context, String city, Forecast.Report report, boolean fahrenheit) {
++        try {
++            JSONObject data = new JSONObject();
++            data.put("city", city);
++            data.put("tempC", report.tempC);
++            data.put("feelsC", report.feelsC);
++            data.put("code", report.code);
++            data.put("day", report.day);
++            data.put("todayMaxC", report.todayMaxC);
++            data.put("todayMinC", report.todayMinC);
++            data.put("fahrenheit", fahrenheit);
++            data.put("updated", System.currentTimeMillis());
++            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
++                    .edit().putString(KEY, data.toString()).apply();
++        } catch (Exception ignored) {
++        }
++    }
++
++    static JSONObject read(Context context) {
++        String raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY, null);
++        if (raw == null) return null;
++        try {
++            return new JSONObject(raw);
++        } catch (Exception e) {
++            return null;
++        }
++    }
++}
+diff --git a/addons/weather/app/src/main/java/io/github/sumyabazar1/weather/WeatherProvider.java b/addons/weather/app/src/main/java/io/github/sumyabazar1/weather/WeatherProvider.java
+new file mode 100644
+index 0000000..7c03ba3
+--- /dev/null
++++ b/addons/weather/app/src/main/java/io/github/sumyabazar1/weather/WeatherProvider.java
+@@ -0,0 +1,78 @@
++package io.github.sumyabazar1.weather;
++
++import android.content.ContentProvider;
++import android.content.ContentValues;
++import android.database.Cursor;
++import android.database.MatrixCursor;
++import android.net.Uri;
++
++import org.json.JSONObject;
++
++/**
++ * Read-only local data for the launcher's header weather widget. The launcher has no INTERNET
++ * permission; this provider hands it the latest reading the weather app already fetched.
++ */
++public final class WeatherProvider extends ContentProvider {
++    static final String AUTHORITY = "io.github.sumyabazar1.weather.current";
++    private static final String[] COLUMNS = {
++            "city", "temp", "condition", "high", "low", "low_c", "code", "day", "unit", "updated"
++    };
++
++    @Override
++    public boolean onCreate() {
++        return true;
++    }
++
++    @Override
++    public Cursor query(Uri uri, String[] projection, String selection, String[] selectionArgs, String sortOrder) {
++        MatrixCursor cursor = new MatrixCursor(COLUMNS);
++        if (getContext() == null) return cursor;
++        JSONObject data = WeatherCache.read(getContext());
++        if (data == null) return cursor;
++
++        boolean fahrenheit = data.optBoolean("fahrenheit");
++        int code = data.optInt("code");
++        boolean day = data.optBoolean("day", true);
++        String city = data.optString("city", "");
++        double tempC = data.optDouble("tempC", Double.NaN);
++        double highC = data.optDouble("todayMaxC", Double.NaN);
++        double lowC = data.optDouble("todayMinC", Double.NaN);
++        if (city.isEmpty() || Double.isNaN(tempC) || Double.isNaN(highC) || Double.isNaN(lowC)) {
++            return cursor;
++        }
++
++        cursor.addRow(new Object[]{
++                city,
++                Forecast.degrees(tempC, fahrenheit) + "°",
++                getContext().getString(Forecast.sky(code, day)),
++                Forecast.degrees(highC, fahrenheit) + "°",
++                Forecast.degrees(lowC, fahrenheit) + "°",
++                String.valueOf(lowC),
++                code,
++                day ? 1 : 0,
++                fahrenheit ? "F" : "C",
++                data.optLong("updated")
++        });
++        return cursor;
++    }
++
++    @Override
++    public String getType(Uri uri) {
++        return "vnd.android.cursor.item/weather";
++    }
++
++    @Override
++    public Uri insert(Uri uri, ContentValues values) {
++        throw new UnsupportedOperationException("read-only");
++    }
++
++    @Override
++    public int delete(Uri uri, String selection, String[] selectionArgs) {
++        return 0;
++    }
++
++    @Override
++    public int update(Uri uri, ContentValues values, String selection, String[] selectionArgs) {
++        return 0;
++    }
++}
